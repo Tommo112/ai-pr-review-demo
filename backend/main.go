@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -39,9 +40,15 @@ func setupRouter() *gin.Engine {
 			return
 		}
 
+		ref, err := parsePRURL(req.PRURL)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
 		c.JSON(http.StatusOK, gin.H{
 			"pr": gin.H{
-				"title":         "Mock PR analysis",
+				"title":         "Mock PR analysis for " + ref.Owner + "/" + ref.Repo,
 				"author":        "demo-user",
 				"files_changed": 3,
 				"additions":     128,
@@ -55,7 +62,7 @@ func setupRouter() *gin.Engine {
 					"line":        1,
 					"title":       "Mock risk item",
 					"description": "This placeholder confirms the frontend can render structured review data.",
-					"suggestion":  "Replace the mock response after GitHub diff fetching is implemented.",
+					"suggestion":  "Use the parsed PR reference to fetch GitHub data in the next step.",
 				},
 			},
 			"review_comments": []gin.H{
@@ -65,7 +72,7 @@ func setupRouter() *gin.Engine {
 					"comment": "Mock review comment for frontend/backend integration.",
 				},
 			},
-			"final_review": "Mock final review for " + req.PRURL,
+			"final_review": "Mock final review for " + ref.Owner + "/" + ref.Repo + "#" + strconv.Itoa(ref.Number),
 		})
 	})
 
