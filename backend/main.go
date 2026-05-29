@@ -26,6 +26,10 @@ func main() {
 }
 
 func setupRouter() *gin.Engine {
+	return setupRouterWithFetcher(newGitHubClient())
+}
+
+func setupRouterWithFetcher(fetcher pullRequestFetcher) *gin.Engine {
 	router := gin.New()
 	router.Use(gin.Logger(), gin.Recovery())
 
@@ -46,33 +50,45 @@ func setupRouter() *gin.Engine {
 			return
 		}
 
+		pr, err := fetcher.FetchPullRequest(c.Request.Context(), ref)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch GitHub PR data: " + err.Error()})
+			return
+		}
+
+		riskFile := "unknown"
+		if len(pr.Files) > 0 {
+			riskFile = pr.Files[0].Filename
+		}
+
 		c.JSON(http.StatusOK, gin.H{
 			"pr": gin.H{
-				"title":         "Mock PR analysis for " + ref.Owner + "/" + ref.Repo,
-				"author":        "demo-user",
-				"files_changed": 3,
-				"additions":     128,
-				"deletions":     36,
+				"title":         pr.Title,
+				"author":        pr.Author,
+				"files_changed": pr.FilesChanged,
+				"additions":     pr.Additions,
+				"deletions":     pr.Deletions,
 			},
-			"summary": "Backend is connected. GitHub and AI analysis will be added in the next steps.",
+			"files":   pr.Files,
+			"summary": "已从 GitHub 获取 PR 基本信息和变更文件，AI 分析会在下一步接入。",
 			"risks": []gin.H{
 				{
 					"level":       "medium",
-					"file":        "backend/main.go",
+					"file":        riskFile,
 					"line":        1,
-					"title":       "Mock risk item",
-					"description": "This placeholder confirms the frontend can render structured review data.",
-					"suggestion":  "Use the parsed PR reference to fetch GitHub data in the next step.",
+					"title":       "待 AI 分析",
+					"description": "当前结果来自 GitHub API，尚未经过模型审查。",
+					"suggestion":  "下一步接入 AI 后，用真实 diff 生成风险判断。",
 				},
 			},
 			"review_comments": []gin.H{
 				{
-					"file":    "backend/main.go",
+					"file":    riskFile,
 					"line":    1,
-					"comment": "Mock review comment for frontend/backend integration.",
+					"comment": "GitHub 数据获取已完成，等待 AI 生成具体 review 建议。",
 				},
 			},
-			"final_review": "Mock final review for " + ref.Owner + "/" + ref.Repo + "#" + strconv.Itoa(ref.Number),
+			"final_review": "已读取 " + ref.Owner + "/" + ref.Repo + "#" + strconv.Itoa(ref.Number) + "，共 " + strconv.Itoa(pr.FilesChanged) + " 个文件变更。",
 		})
 	})
 
