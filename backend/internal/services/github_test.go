@@ -1,10 +1,12 @@
-package main
+package services
 
 import (
 	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"demo/backend/internal/models"
 )
 
 func TestGitHubClientFetchPullRequest(t *testing.T) {
@@ -43,12 +45,8 @@ func TestGitHubClientFetchPullRequest(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	client := githubClient{
-		baseURL:    server.URL,
-		httpClient: server.Client(),
-	}
-
-	data, err := client.FetchPullRequest(context.Background(), prRef{
+	client := NewGitHubClientForTest(server.URL, server.Client(), "")
+	data, err := client.FetchPullRequest(context.Background(), models.PRRef{
 		Owner:  "owner",
 		Repo:   "repo",
 		Number: 12,
@@ -72,12 +70,8 @@ func TestGitHubClientReturnsStatusError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := githubClient{
-		baseURL:    server.URL,
-		httpClient: server.Client(),
-	}
-
-	_, err := client.FetchPullRequest(context.Background(), prRef{
+	client := NewGitHubClientForTest(server.URL, server.Client(), "")
+	_, err := client.FetchPullRequest(context.Background(), models.PRRef{
 		Owner:  "owner",
 		Repo:   "repo",
 		Number: 12,

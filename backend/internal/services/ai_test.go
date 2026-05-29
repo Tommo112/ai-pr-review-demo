@@ -1,4 +1,4 @@
-package main
+package services
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"demo/backend/internal/models"
 )
 
 func TestOpenAICompatibleAnalyzer(t *testing.T) {
@@ -45,24 +47,18 @@ func TestOpenAICompatibleAnalyzer(t *testing.T) {
 	}))
 	defer server.Close()
 
-	analyzer := openAICompatibleAnalyzer{
-		apiKey:     "test-key",
-		baseURL:    server.URL,
-		model:      "test-model",
-		httpClient: server.Client(),
-	}
-
-	response, err := analyzer.AnalyzePullRequest(context.Background(), prRef{
+	analyzer := NewOpenAICompatibleAnalyzerForTest("test-key", server.URL, "test-model", server.Client())
+	response, err := analyzer.AnalyzePullRequest(context.Background(), models.PRRef{
 		Owner:  "owner",
 		Repo:   "repo",
 		Number: 1,
-	}, pullRequestData{
+	}, models.PullRequestData{
 		Title:        "Fix auth",
 		Author:       "alice",
 		FilesChanged: 1,
 		Additions:    10,
 		Deletions:    2,
-		Files: []pullRequestFile{
+		Files: []models.PullRequestFile{
 			{Filename: "auth.go", Status: "modified", Additions: 10, Deletions: 2, Patch: "@@ -1 +1 @@"},
 		},
 	})
@@ -78,8 +74,42 @@ func TestOpenAICompatibleAnalyzer(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleAnalyzerFillsEmptyReviewDefaults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"choices": [
+				{
+					"message": {
+						"content": "{\"summary\":\"\",\"risks\":[],\"review_comments\":[],\"final_review\":\"\"}"
+					}
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	analyzer := NewOpenAICompatibleAnalyzerForTest("test-key", server.URL, "test-model", server.Client())
+	response, err := analyzer.AnalyzePullRequest(context.Background(), models.PRRef{
+		Owner:  "owner",
+		Repo:   "repo",
+		Number: 2,
+	}, models.PullRequestData{
+		Title:        "Docs",
+		Author:       "bob",
+		FilesChanged: 0,
+	})
+	if err != nil {
+		t.Fatalf("expected review defaults, got error: %v", err)
+	}
+
+	if response.Summary == "" || len(response.Risks) == 0 || len(response.ReviewComments) == 0 || response.FinalReview == "" {
+		t.Fatalf("expected fallback review fields, got: %+v", response)
+	}
+}
+
 func TestTrimDiffForPrompt(t *testing.T) {
-	result := trimDiffForPrompt([]pullRequestFile{
+	result := TrimDiffForPrompt([]models.PullRequestFile{
 		{
 			Filename: "large.go",
 			Status:   "modified",

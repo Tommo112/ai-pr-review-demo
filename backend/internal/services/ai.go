@@ -1,4 +1,4 @@
-package main
+package services
 
 import (
 	"bytes"
@@ -7,74 +7,74 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"demo/backend/internal/config"
+	"demo/backend/internal/models"
 )
 
-type prAnalyzer interface {
-	AnalyzePullRequest(ctx context.Context, ref prRef, pr pullRequestData) (reviewResponse, error)
+type PRAnalyzer interface {
+	AnalyzePullRequest(ctx context.Context, ref models.PRRef, pr models.PullRequestData) (models.ReviewResponse, error)
 }
 
-type fallbackAnalyzer struct{}
+type FallbackAnalyzer struct{}
 
-func newPRAnalyzer() prAnalyzer {
-	apiKey := os.Getenv("OPENAI_API_KEY")
-	model := os.Getenv("OPENAI_MODEL")
-	if apiKey == "" || model == "" {
-		return fallbackAnalyzer{}
+func NewPRAnalyzer(cfg config.Config) PRAnalyzer {
+	if cfg.OpenAIAPIKey == "" || cfg.OpenAIModel == "" {
+		return FallbackAnalyzer{}
 	}
 
-	baseURL := os.Getenv("OPENAI_BASE_URL")
-	if baseURL == "" {
-		baseURL = "https://api.openai.com/v1"
-	}
-
-	return openAICompatibleAnalyzer{
-		apiKey:  apiKey,
-		baseURL: strings.TrimRight(baseURL, "/"),
-		model:   model,
+	return OpenAICompatibleAnalyzer{
+		apiKey:  cfg.OpenAIAPIKey,
+		baseURL: strings.TrimRight(cfg.OpenAIBaseURL, "/"),
+		model:   cfg.OpenAIModel,
 		httpClient: &http.Client{
 			Timeout: 45 * time.Second,
 		},
 	}
 }
 
-func (fallbackAnalyzer) AnalyzePullRequest(_ context.Context, ref prRef, pr pullRequestData) (reviewResponse, error) {
+func (FallbackAnalyzer) AnalyzePullRequest(_ context.Context, ref models.PRRef, pr models.PullRequestData) (models.ReviewResponse, error) {
 	return newPendingAIReviewResponse(ref, pr), nil
 }
 
-type openAICompatibleAnalyzer struct {
+type OpenAICompatibleAnalyzer struct {
 	apiKey     string
 	baseURL    string
 	model      string
 	httpClient *http.Client
 }
 
-type aiReviewOutput struct {
-	Summary        string          `json:"summary"`
-	Risks          []risk          `json:"risks"`
-	ReviewComments []reviewComment `json:"review_comments"`
-	FinalReview    string          `json:"final_review"`
+func NewOpenAICompatibleAnalyzerForTest(apiKey string, baseURL string, model string, httpClient *http.Client) OpenAICompatibleAnalyzer {
+	return OpenAICompatibleAnalyzer{apiKey: apiKey, baseURL: baseURL, model: model, httpClient: httpClient}
 }
 
-func (client openAICompatibleAnalyzer) AnalyzePullRequest(ctx context.Context, ref prRef, pr pullRequestData) (reviewResponse, error) {
+type aiReviewOutput struct {
+	Summary        string                 `json:"summary"`
+	Risks          []models.Risk          `json:"risks"`
+	ReviewComments []models.ReviewComment `json:"review_comments"`
+	FinalReview    string                 `json:"final_review"`
+}
+
+func (client OpenAICompatibleAnalyzer) AnalyzePullRequest(ctx context.Context, ref models.PRRef, pr models.PullRequestData) (models.ReviewResponse, error) {
 	prompt := buildReviewPrompt(ref, pr)
 	output, err := client.requestReview(ctx, prompt)
 	if err != nil {
-		return reviewResponse{}, err
+		return models.ReviewResponse{}, err
 	}
 
-	response := newReviewResponseFromGitHub(ref, pr)
+	response := newReviewResponseFromGitHub(pr)
 	response.Summary = output.Summary
 	response.Risks = output.Risks
 	response.ReviewComments = output.ReviewComments
 	response.FinalReview = output.FinalReview
+	ensureReviewDefaults(&response, ref)
 	return response, nil
 }
 
-func (client openAICompatibleAnalyzer) requestReview(ctx context.Context, prompt string) (aiReviewOutput, error) {
+func (client OpenAICompatibleAnalyzer) requestReview(ctx context.Context, prompt string) (aiReviewOutput, error) {
 	payload := map[string]any{
 		"model": client.model,
 		"messages": []map[string]string{
@@ -137,7 +137,7 @@ func (client openAICompatibleAnalyzer) requestReview(ctx context.Context, prompt
 	return output, nil
 }
 
-func buildReviewPrompt(ref prRef, pr pullRequestData) string {
+func buildReviewPrompt(ref models.PRRef, pr models.PullRequestData) string {
 	var builder strings.Builder
 	builder.WriteString("Review this GitHub pull request and return JSON with exactly these keys: summary, risks, review_comments, final_review.\n")
 	builder.WriteString("Risk level must be one of high, medium, low. Use concise Chinese review language.\n\n")
@@ -147,11 +147,11 @@ func buildReviewPrompt(ref prRef, pr pullRequestData) string {
 	builder.WriteString("Author: " + pr.Author + "\n")
 	builder.WriteString("Stats: +" + strconv.Itoa(pr.Additions) + " -" + strconv.Itoa(pr.Deletions) + ", files " + strconv.Itoa(pr.FilesChanged) + "\n\n")
 	builder.WriteString("Files and patches:\n")
-	builder.WriteString(trimDiffForPrompt(pr.Files, 12000))
+	builder.WriteString(TrimDiffForPrompt(pr.Files, 12000))
 	return builder.String()
 }
 
-func trimDiffForPrompt(files []pullRequestFile, maxChars int) string {
+func TrimDiffForPrompt(files []models.PullRequestFile, maxChars int) string {
 	var builder strings.Builder
 	for _, file := range files {
 		if builder.Len() >= maxChars {

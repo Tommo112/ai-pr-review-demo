@@ -1,9 +1,9 @@
-package main
+package services
 
 import "testing"
 
 func TestParsePRURL(t *testing.T) {
-	ref, err := parsePRURL("https://github.com/openai/codex/pull/123")
+	ref, err := ParsePRURL("https://github.com/openai/codex/pull/123")
 	if err != nil {
 		t.Fatalf("expected valid PR URL, got error: %v", err)
 	}
@@ -14,7 +14,7 @@ func TestParsePRURL(t *testing.T) {
 }
 
 func TestParsePRURLWithQueryAndWhitespace(t *testing.T) {
-	ref, err := parsePRURL(" https://github.com/owner/repo/pull/42?tab=files ")
+	ref, err := ParsePRURL(" https://github.com/owner/repo/pull/42?tab=files ")
 	if err != nil {
 		t.Fatalf("expected valid PR URL, got error: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestParsePRURLRejectsInvalidURL(t *testing.T) {
 	}
 
 	for _, rawURL := range invalidURLs {
-		if _, err := parsePRURL(rawURL); err == nil {
+		if _, err := ParsePRURL(rawURL); err == nil {
 			t.Fatalf("expected %q to be rejected", rawURL)
 		}
 	}

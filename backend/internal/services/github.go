@@ -1,4 +1,4 @@
-package main
+package services
 
 import (
 	"context"
@@ -6,50 +6,39 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"demo/backend/internal/config"
+	"demo/backend/internal/models"
 )
 
-type pullRequestFetcher interface {
-	FetchPullRequest(ctx context.Context, ref prRef) (pullRequestData, error)
+type PullRequestFetcher interface {
+	FetchPullRequest(ctx context.Context, ref models.PRRef) (models.PullRequestData, error)
 }
 
-type pullRequestData struct {
-	Title        string
-	Author       string
-	FilesChanged int
-	Additions    int
-	Deletions    int
-	Files        []pullRequestFile
-}
-
-type pullRequestFile struct {
-	Filename  string `json:"filename"`
-	Status    string `json:"status"`
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
-	Patch     string `json:"patch"`
-}
-
-type githubClient struct {
+type GitHubClient struct {
 	baseURL    string
 	httpClient *http.Client
 	token      string
 }
 
-func newGitHubClient() githubClient {
-	return githubClient{
+func NewGitHubClient(cfg config.Config) GitHubClient {
+	return GitHubClient{
 		baseURL: "https://api.github.com",
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
-		token: os.Getenv("GITHUB_TOKEN"),
+		token: cfg.GitHubToken,
 	}
 }
 
-func (client githubClient) FetchPullRequest(ctx context.Context, ref prRef) (pullRequestData, error) {
+func NewGitHubClientForTest(baseURL string, httpClient *http.Client, token string) GitHubClient {
+	return GitHubClient{baseURL: baseURL, httpClient: httpClient, token: token}
+}
+
+func (client GitHubClient) FetchPullRequest(ctx context.Context, ref models.PRRef) (models.PullRequestData, error) {
 	var pull struct {
 		Title        string `json:"title"`
 		Additions    int    `json:"additions"`
@@ -61,15 +50,15 @@ func (client githubClient) FetchPullRequest(ctx context.Context, ref prRef) (pul
 	}
 
 	if err := client.getJSON(ctx, pullURL(client.baseURL, ref), &pull); err != nil {
-		return pullRequestData{}, err
+		return models.PullRequestData{}, err
 	}
 
-	var files []pullRequestFile
+	var files []models.PullRequestFile
 	if err := client.getJSON(ctx, pullFilesURL(client.baseURL, ref), &files); err != nil {
-		return pullRequestData{}, err
+		return models.PullRequestData{}, err
 	}
 
-	return pullRequestData{
+	return models.PullRequestData{
 		Title:        pull.Title,
 		Author:       pull.User.Login,
 		FilesChanged: pull.ChangedFiles,
@@ -79,7 +68,7 @@ func (client githubClient) FetchPullRequest(ctx context.Context, ref prRef) (pul
 	}, nil
 }
 
-func (client githubClient) getJSON(ctx context.Context, endpoint string, target any) error {
+func (client GitHubClient) getJSON(ctx context.Context, endpoint string, target any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
@@ -104,15 +93,15 @@ func (client githubClient) getJSON(ctx context.Context, endpoint string, target 
 	return json.NewDecoder(resp.Body).Decode(target)
 }
 
-func pullURL(baseURL string, ref prRef) string {
+func pullURL(baseURL string, ref models.PRRef) string {
 	return joinGitHubURL(baseURL, ref, "pulls", strconv.Itoa(ref.Number))
 }
 
-func pullFilesURL(baseURL string, ref prRef) string {
+func pullFilesURL(baseURL string, ref models.PRRef) string {
 	return joinGitHubURL(baseURL, ref, "pulls", strconv.Itoa(ref.Number), "files") + "?per_page=100"
 }
 
-func joinGitHubURL(baseURL string, ref prRef, parts ...string) string {
+func joinGitHubURL(baseURL string, ref models.PRRef, parts ...string) string {
 	escaped := []string{
 		"repos",
 		url.PathEscape(ref.Owner),

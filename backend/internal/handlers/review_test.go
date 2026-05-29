@@ -1,4 +1,4 @@
-package main
+package handlers
 
 import (
 	"bytes"
@@ -7,26 +7,31 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"demo/backend/internal/models"
+	"demo/backend/internal/services"
+
+	"github.com/gin-gonic/gin"
 )
 
 type mockPullRequestFetcher struct {
-	data pullRequestData
+	data models.PullRequestData
 	err  error
 }
 
-func (fetcher mockPullRequestFetcher) FetchPullRequest(_ context.Context, _ prRef) (pullRequestData, error) {
+func (fetcher mockPullRequestFetcher) FetchPullRequest(_ context.Context, _ models.PRRef) (models.PullRequestData, error) {
 	return fetcher.data, fetcher.err
 }
 
 func TestReviewEndpoint(t *testing.T) {
-	router := setupRouterWithFetcher(mockPullRequestFetcher{
-		data: pullRequestData{
+	router := testRouter(mockPullRequestFetcher{
+		data: models.PullRequestData{
 			Title:        "Fix auth",
 			Author:       "alice",
 			FilesChanged: 1,
 			Additions:    10,
 			Deletions:    2,
-			Files: []pullRequestFile{
+			Files: []models.PullRequestFile{
 				{Filename: "auth.go", Status: "modified", Patch: "@@ -1 +1 @@"},
 			},
 		},
@@ -43,7 +48,7 @@ func TestReviewEndpoint(t *testing.T) {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
 	}
 
-	var response reviewResponse
+	var response models.ReviewResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("expected review response JSON, got error: %v", err)
 	}
@@ -58,7 +63,7 @@ func TestReviewEndpoint(t *testing.T) {
 }
 
 func TestReviewEndpointRequiresPRURL(t *testing.T) {
-	router := setupRouterWithFetcher(mockPullRequestFetcher{})
+	router := testRouter(mockPullRequestFetcher{})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/review", bytes.NewBufferString(`{}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -72,7 +77,7 @@ func TestReviewEndpointRequiresPRURL(t *testing.T) {
 }
 
 func TestReviewEndpointRejectsInvalidPRURL(t *testing.T) {
-	router := setupRouterWithFetcher(mockPullRequestFetcher{})
+	router := testRouter(mockPullRequestFetcher{})
 
 	body := bytes.NewBufferString(`{"pr_url":"https://example.com/owner/repo/pull/1"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/review", body)
@@ -84,4 +89,13 @@ func TestReviewEndpointRejectsInvalidPRURL(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
+}
+
+func testRouter(fetcher services.PullRequestFetcher) *gin.Engine {
+	reviewService := services.NewReviewService(fetcher, services.FallbackAnalyzer{})
+	reviewHandler := NewReviewHandler(reviewService)
+	router := gin.New()
+	router.GET("/health", reviewHandler.Health)
+	router.POST("/api/review", reviewHandler.Review)
+	return router
 }

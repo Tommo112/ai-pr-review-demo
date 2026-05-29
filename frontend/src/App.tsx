@@ -88,6 +88,7 @@ function App() {
   }
 
   const activeFile = review?.files.find((file) => file.filename === selectedFile)
+  const patchLines = activeFile?.patch?.split('\n') ?? []
 
   return (
     <main className="min-h-screen bg-neutral-950 px-6 py-8 text-neutral-100">
@@ -110,16 +111,38 @@ function App() {
             <button
               className="min-h-11 rounded-md bg-emerald-300 px-5 text-sm font-medium text-neutral-950 transition hover:bg-emerald-200 disabled:cursor-not-allowed disabled:opacity-60"
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading || prUrl.trim() === ''}
             >
               {isLoading ? 'Analyzing...' : 'Analyze'}
             </button>
           </form>
 
+          {isLoading ? (
+            <p className="text-sm text-neutral-400">
+              Fetching GitHub files and preparing review output...
+            </p>
+          ) : null}
           {error ? <p className="text-sm text-red-300">{error}</p> : null}
         </header>
 
-        {review ? (
+        {isLoading && !review ? (
+          <section className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)_360px]">
+            {[0, 1, 2].map((item) => (
+              <div
+                className="min-h-[420px] rounded-md border border-neutral-800 bg-neutral-900 p-4"
+                key={item}
+              >
+                <div className="h-3 w-24 animate-pulse rounded bg-neutral-800" />
+                <div className="mt-6 h-5 w-2/3 animate-pulse rounded bg-neutral-800" />
+                <div className="mt-4 space-y-3">
+                  <div className="h-3 animate-pulse rounded bg-neutral-800" />
+                  <div className="h-3 w-5/6 animate-pulse rounded bg-neutral-800" />
+                  <div className="h-3 w-3/4 animate-pulse rounded bg-neutral-800" />
+                </div>
+              </div>
+            ))}
+          </section>
+        ) : review ? (
           <section className="grid gap-4 lg:grid-cols-[280px_minmax(0,1fr)_360px]">
             <aside className="flex min-h-[620px] flex-col rounded-md border border-neutral-800 bg-neutral-900">
               <div className="border-b border-neutral-800 p-4">
@@ -150,7 +173,8 @@ function App() {
                   Files
                 </p>
                 <div className="flex flex-col gap-1">
-                  {review.files.map((file) => (
+                  {review.files.length > 0 ? (
+                    review.files.map((file) => (
                     <button
                       className={`rounded-md px-3 py-2 text-left text-sm transition ${
                         file.filename === selectedFile
@@ -166,7 +190,12 @@ function App() {
                         {file.status} +{file.additions} -{file.deletions}
                       </span>
                     </button>
-                  ))}
+                    ))
+                  ) : (
+                    <p className="rounded-md border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-500">
+                      No changed files returned by GitHub.
+                    </p>
+                  )}
                 </div>
               </div>
             </aside>
@@ -189,7 +218,7 @@ function App() {
               <div className="max-h-[560px] overflow-auto">
                 {activeFile?.patch ? (
                   <pre className="min-w-full p-4 text-left font-mono text-xs leading-5 text-neutral-300">
-                    {activeFile.patch.split('\n').map((line, index) => (
+                    {patchLines.map((line, index) => (
                       <code
                         className={`block whitespace-pre px-2 ${
                           line.startsWith('+')
@@ -223,7 +252,8 @@ function App() {
               <section>
                 <p className="text-xs uppercase tracking-widest text-neutral-500">Risks</p>
                 <div className="mt-4 flex flex-col gap-3">
-                  {review.risks.map((risk) => (
+                  {review.risks.length > 0 ? (
+                    review.risks.map((risk) => (
                     <article
                       className="rounded-md border border-neutral-800 bg-neutral-950 p-3"
                       key={`${risk.file}:${risk.line}:${risk.title}`}
@@ -244,7 +274,39 @@ function App() {
                         {risk.suggestion}
                       </p>
                     </article>
-                  ))}
+                    ))
+                  ) : (
+                    <p className="rounded-md border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-500">
+                      No structured risks returned.
+                    </p>
+                  )}
+                </div>
+              </section>
+
+              <section>
+                <p className="text-xs uppercase tracking-widest text-neutral-500">
+                  Review Comments
+                </p>
+                <div className="mt-4 flex flex-col gap-3">
+                  {review.review_comments.length > 0 ? (
+                    review.review_comments.map((comment) => (
+                      <article
+                        className="rounded-md border border-neutral-800 bg-neutral-950 p-3"
+                        key={`${comment.file}:${comment.line}:${comment.comment}`}
+                      >
+                        <p className="text-xs text-neutral-500">
+                          {comment.file}:{comment.line}
+                        </p>
+                        <p className="mt-2 text-sm leading-5 text-neutral-300">
+                          {comment.comment}
+                        </p>
+                      </article>
+                    ))
+                  ) : (
+                    <p className="rounded-md border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-500">
+                      No review comments returned.
+                    </p>
+                  )}
                 </div>
               </section>
 
