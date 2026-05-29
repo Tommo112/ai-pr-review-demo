@@ -36,9 +36,30 @@ func (handler *ReviewHandler) Review(c *gin.Context) {
 			return
 		}
 
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		var serviceErr services.ServiceError
+		if errors.As(err, &serviceErr) {
+			c.JSON(statusForServiceError(serviceErr), gin.H{"error": serviceErr.Message})
+			return
+		}
+
+		c.JSON(http.StatusBadGateway, gin.H{"error": "服务暂时无法完成 PR Review，请稍后重试"})
 		return
 	}
 
 	c.JSON(http.StatusOK, response)
+}
+
+func statusForServiceError(err services.ServiceError) int {
+	switch err.Kind {
+	case services.ErrorKindGitHubNotFound:
+		return http.StatusNotFound
+	case services.ErrorKindGitHubUnauthorized:
+		return http.StatusForbidden
+	case services.ErrorKindGitHubRateLimited:
+		return http.StatusTooManyRequests
+	case services.ErrorKindGitHubUnavailable, services.ErrorKindAIUnavailable:
+		return http.StatusBadGateway
+	default:
+		return http.StatusBadGateway
+	}
 }

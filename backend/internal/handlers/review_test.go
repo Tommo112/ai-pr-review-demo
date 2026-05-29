@@ -91,6 +91,56 @@ func TestReviewEndpointRejectsInvalidPRURL(t *testing.T) {
 	}
 }
 
+func TestReviewEndpointMapsServiceErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{
+			name: "github not found",
+			err: services.ServiceError{
+				Kind:    services.ErrorKindGitHubNotFound,
+				Message: "not found",
+			},
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "github rate limited",
+			err: services.ServiceError{
+				Kind:    services.ErrorKindGitHubRateLimited,
+				Message: "rate limited",
+			},
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
+			name: "ai unavailable",
+			err: services.ServiceError{
+				Kind:    services.ErrorKindAIUnavailable,
+				Message: "ai unavailable",
+			},
+			wantStatus: http.StatusBadGateway,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := testRouter(mockPullRequestFetcher{err: tt.err})
+
+			body := bytes.NewBufferString(`{"pr_url":"https://github.com/owner/repo/pull/1"}`)
+			req := httptest.NewRequest(http.MethodPost, "/api/review", body)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("expected status %d, got %d: %s", tt.wantStatus, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 func testRouter(fetcher services.PullRequestFetcher) *gin.Engine {
 	reviewService := services.NewReviewService(fetcher, services.FallbackAnalyzer{})
 	reviewHandler := NewReviewHandler(reviewService)

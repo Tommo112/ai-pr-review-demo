@@ -82,15 +82,50 @@ func (client GitHubClient) getJSON(ctx context.Context, endpoint string, target 
 
 	resp, err := client.httpClient.Do(req)
 	if err != nil {
-		return err
+		return ServiceError{
+			Kind:    ErrorKindGitHubUnavailable,
+			Message: "无法连接 GitHub API，请检查网络、代理或 GitHub Token 配置",
+			Err:     err,
+		}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("github api returned %s", resp.Status)
+		return githubStatusError(resp)
 	}
 
 	return json.NewDecoder(resp.Body).Decode(target)
+}
+
+func githubStatusError(resp *http.Response) error {
+	switch resp.StatusCode {
+	case http.StatusNotFound:
+		return ServiceError{
+			Kind:    ErrorKindGitHubNotFound,
+			Message: "无法找到该 GitHub PR，请确认仓库和 PR 编号是否正确，或确认当前 Token 有访问权限",
+		}
+	case http.StatusUnauthorized:
+		return ServiceError{
+			Kind:    ErrorKindGitHubUnauthorized,
+			Message: "GitHub Token 无效或缺失，请检查 GITHUB_TOKEN 配置",
+		}
+	case http.StatusForbidden:
+		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			return ServiceError{
+				Kind:    ErrorKindGitHubRateLimited,
+				Message: "GitHub API 请求已限流，请稍后重试或配置有效的 GITHUB_TOKEN",
+			}
+		}
+		return ServiceError{
+			Kind:    ErrorKindGitHubUnauthorized,
+			Message: "没有权限访问该 GitHub PR，请确认仓库权限或 Token 权限",
+		}
+	default:
+		return ServiceError{
+			Kind:    ErrorKindGitHubUnavailable,
+			Message: fmt.Sprintf("GitHub API 返回异常状态：%s", resp.Status),
+		}
+	}
 }
 
 func pullURL(baseURL string, ref models.PRRef) string {

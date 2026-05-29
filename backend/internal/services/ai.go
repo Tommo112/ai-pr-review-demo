@@ -107,12 +107,19 @@ func (client OpenAICompatibleAnalyzer) requestReview(ctx context.Context, prompt
 
 	resp, err := client.httpClient.Do(req)
 	if err != nil {
-		return aiReviewOutput{}, err
+		return aiReviewOutput{}, ServiceError{
+			Kind:    ErrorKindAIUnavailable,
+			Message: "无法连接 AI 服务，请检查 OPENAI_BASE_URL、OPENAI_API_KEY 或代理配置",
+			Err:     err,
+		}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return aiReviewOutput{}, fmt.Errorf("ai api returned %s", resp.Status)
+		return aiReviewOutput{}, ServiceError{
+			Kind:    ErrorKindAIUnavailable,
+			Message: fmt.Sprintf("AI 服务返回异常状态：%s", resp.Status),
+		}
 	}
 
 	var completion struct {
@@ -123,23 +130,27 @@ func (client OpenAICompatibleAnalyzer) requestReview(ctx context.Context, prompt
 		} `json:"choices"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&completion); err != nil {
-		return aiReviewOutput{}, err
+		return aiReviewOutput{}, ServiceError{
+			Kind:    ErrorKindAIUnavailable,
+			Message: "AI 服务响应格式无法解析",
+			Err:     err,
+		}
 	}
 	if len(completion.Choices) == 0 {
-		return aiReviewOutput{}, errors.New("ai api returned no choices")
+		return aiReviewOutput{}, ServiceError{
+			Kind:    ErrorKindAIUnavailable,
+			Message: "AI 服务没有返回可用结果",
+			Err:     errors.New("ai api returned no choices"),
+		}
 	}
 
-	var output aiReviewOutput
-	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &output); err != nil {
-		return aiReviewOutput{}, fmt.Errorf("ai response is not valid review JSON: %w", err)
-	}
-
-	return output, nil
+	return parseAIReviewOutput(completion.Choices[0].Message.Content)
 }
 
 func buildReviewPrompt(ref models.PRRef, pr models.PullRequestData) string {
 	var builder strings.Builder
 	builder.WriteString("Review this GitHub pull request and return JSON with exactly these keys: summary, risks, review_comments, final_review.\n")
+	builder.WriteString("The JSON shape must be: {\"summary\":\"...\",\"risks\":[{\"level\":\"high|medium|low\",\"file\":\"path\",\"line\":1,\"title\":\"...\",\"description\":\"...\",\"suggestion\":\"...\"}],\"review_comments\":[{\"file\":\"path\",\"line\":1,\"comment\":\"...\"}],\"final_review\":\"...\"}.\n")
 	builder.WriteString("Risk level must be one of high, medium, low. Use concise Chinese review language.\n\n")
 	builder.WriteString("PR: ")
 	builder.WriteString(ref.Owner + "/" + ref.Repo + "#" + strconv.Itoa(ref.Number) + "\n")
@@ -149,6 +160,29 @@ func buildReviewPrompt(ref models.PRRef, pr models.PullRequestData) string {
 	builder.WriteString("Files and patches:\n")
 	builder.WriteString(TrimDiffForPrompt(pr.Files, 12000))
 	return builder.String()
+}
+
+func parseAIReviewOutput(content string) (aiReviewOutput, error) {
+	var output aiReviewOutput
+	if err := json.Unmarshal([]byte(content), &output); err == nil {
+		return output, nil
+	}
+
+	var raw struct {
+		Summary        string          `json:"summary"`
+		Risks          json.RawMessage `json:"risks"`
+		ReviewComments json.RawMessage `json:"review_comments"`
+		FinalReview    string          `json:"final_review"`
+	}
+	if err := json.Unmarshal([]byte(content), &raw); err != nil {
+		return aiReviewOutput{}, fmt.Errorf("ai response is not valid review JSON: %w", err)
+	}
+
+	output.Summary = raw.Summary
+	output.FinalReview = raw.FinalReview
+	_ = json.Unmarshal(raw.Risks, &output.Risks)
+	_ = json.Unmarshal(raw.ReviewComments, &output.ReviewComments)
+	return output, nil
 }
 
 func TrimDiffForPrompt(files []models.PullRequestFile, maxChars int) string {

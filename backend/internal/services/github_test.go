@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -76,7 +77,33 @@ func TestGitHubClientReturnsStatusError(t *testing.T) {
 		Repo:   "repo",
 		Number: 12,
 	})
-	if err == nil {
-		t.Fatal("expected status error")
+	var serviceErr ServiceError
+	if !errors.As(err, &serviceErr) {
+		t.Fatalf("expected service error, got: %v", err)
+	}
+	if serviceErr.Kind != ErrorKindGitHubNotFound {
+		t.Fatalf("unexpected error kind: %s", serviceErr.Kind)
+	}
+}
+
+func TestGitHubClientReturnsRateLimitError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		http.Error(w, "rate limited", http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	client := NewGitHubClientForTest(server.URL, server.Client(), "")
+	_, err := client.FetchPullRequest(context.Background(), models.PRRef{
+		Owner:  "owner",
+		Repo:   "repo",
+		Number: 12,
+	})
+	var serviceErr ServiceError
+	if !errors.As(err, &serviceErr) {
+		t.Fatalf("expected service error, got: %v", err)
+	}
+	if serviceErr.Kind != ErrorKindGitHubRateLimited {
+		t.Fatalf("unexpected error kind: %s", serviceErr.Kind)
 	}
 }
