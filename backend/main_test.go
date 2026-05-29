@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -40,6 +41,19 @@ func TestReviewEndpoint(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response reviewResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("expected review response JSON, got error: %v", err)
+	}
+
+	if response.PR.Title != "Fix auth" || response.PR.Author != "alice" {
+		t.Fatalf("unexpected PR info: %+v", response.PR)
+	}
+
+	if len(response.Files) != 1 || response.Files[0].Filename != "auth.go" {
+		t.Fatalf("unexpected files: %+v", response.Files)
 	}
 }
 
