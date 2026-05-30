@@ -228,6 +228,29 @@ function App() {
   const patchLines = activeFile?.patch?.split('\n') ?? []
   const diffOpen = selectedFile !== '' && activeFile !== undefined
 
+  const fileRiskMap = (() => {
+    const map: Record<string, 'high' | 'medium' | 'low'> = {}
+    const order = { high: 3, medium: 2, low: 1 } as const
+    for (const risk of review?.risks ?? []) {
+      const current = map[risk.file]
+      if (!current || order[risk.level as keyof typeof order] > order[current]) {
+        if (risk.level === 'high' || risk.level === 'medium' || risk.level === 'low') {
+          map[risk.file] = risk.level
+        }
+      }
+    }
+    return map
+  })()
+
+  function riskDotClass(level: string) {
+    switch (level) {
+      case 'high': return 'bg-red-500'
+      case 'medium': return 'bg-amber-500'
+      case 'low': return 'bg-emerald-500'
+      default: return 'bg-neutral-300'
+    }
+  }
+
   function toggleFile(filename: string) {
     setSelectedFile((prev) => (prev === filename ? '' : filename))
   }
@@ -445,6 +468,12 @@ function App() {
                         )}
                       />
                       <span className="min-w-0 flex-1 truncate font-mono">{file.filename}</span>
+                      {fileRiskMap[file.filename] ? (
+                        <span
+                          className={cn('h-2 w-2 shrink-0 rounded-full', riskDotClass(fileRiskMap[file.filename]))}
+                          title={`${fileRiskMap[file.filename]} risk`}
+                        />
+                      ) : null}
                     </button>
                   ))}
                 </div>
