@@ -24,3 +24,13 @@ TestResults.xml
 
 # Local backend secrets
 backend/config/config.yaml
+
+# Playwright browser tests
+.playwright-mcp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# npm lock (project uses bun)
+frontend/package-lock.json
