@@ -14,6 +14,11 @@ import (
 	"demo/backend/internal/models"
 )
 
+const (
+	githubFilesPerPage = 100
+	maxGitHubFilePages = 3
+)
+
 type PullRequestFetcher interface {
 	FetchPullRequest(ctx context.Context, ref models.PRRef) (models.PullRequestData, error)
 }
@@ -53,8 +58,8 @@ func (client GitHubClient) FetchPullRequest(ctx context.Context, ref models.PRRe
 		return models.PullRequestData{}, err
 	}
 
-	var files []models.PullRequestFile
-	if err := client.getJSON(ctx, pullFilesURL(client.baseURL, ref), &files); err != nil {
+	files, err := client.fetchPullRequestFiles(ctx, ref)
+	if err != nil {
 		return models.PullRequestData{}, err
 	}
 
@@ -66,6 +71,23 @@ func (client GitHubClient) FetchPullRequest(ctx context.Context, ref models.PRRe
 		Deletions:    pull.Deletions,
 		Files:        files,
 	}, nil
+}
+
+func (client GitHubClient) fetchPullRequestFiles(ctx context.Context, ref models.PRRef) ([]models.PullRequestFile, error) {
+	files := make([]models.PullRequestFile, 0)
+	for page := 1; page <= maxGitHubFilePages; page++ {
+		var pageFiles []models.PullRequestFile
+		if err := client.getJSON(ctx, pullFilesURL(client.baseURL, ref, page), &pageFiles); err != nil {
+			return nil, err
+		}
+
+		files = append(files, pageFiles...)
+		if len(pageFiles) < githubFilesPerPage {
+			break
+		}
+	}
+
+	return files, nil
 }
 
 func (client GitHubClient) getJSON(ctx context.Context, endpoint string, target any) error {
@@ -82,23 +104,58 @@ func (client GitHubClient) getJSON(ctx context.Context, endpoint string, target 
 
 	resp, err := client.httpClient.Do(req)
 	if err != nil {
-		return err
+		return ServiceError{
+			Kind:    ErrorKindGitHubUnavailable,
+			Message: "Unable to connect to GitHub API. Check network, proxy, or GitHub token settings.",
+			Err:     err,
+		}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return fmt.Errorf("github api returned %s", resp.Status)
+		return githubStatusError(resp)
 	}
 
 	return json.NewDecoder(resp.Body).Decode(target)
+}
+
+func githubStatusError(resp *http.Response) error {
+	switch resp.StatusCode {
+	case http.StatusNotFound:
+		return ServiceError{
+			Kind:    ErrorKindGitHubNotFound,
+			Message: "GitHub PR was not found. Confirm the repository, PR number, and token access.",
+		}
+	case http.StatusUnauthorized:
+		return ServiceError{
+			Kind:    ErrorKindGitHubUnauthorized,
+			Message: "GitHub token is missing or invalid. Check GITHUB_TOKEN.",
+		}
+	case http.StatusForbidden:
+		if resp.Header.Get("X-RateLimit-Remaining") == "0" {
+			return ServiceError{
+				Kind:    ErrorKindGitHubRateLimited,
+				Message: "GitHub API rate limit exceeded. Retry later or configure a valid GITHUB_TOKEN.",
+			}
+		}
+		return ServiceError{
+			Kind:    ErrorKindGitHubUnauthorized,
+			Message: "No permission to access this GitHub PR. Check repository or token permissions.",
+		}
+	default:
+		return ServiceError{
+			Kind:    ErrorKindGitHubUnavailable,
+			Message: fmt.Sprintf("GitHub API returned an unexpected status: %s", resp.Status),
+		}
+	}
 }
 
 func pullURL(baseURL string, ref models.PRRef) string {
 	return joinGitHubURL(baseURL, ref, "pulls", strconv.Itoa(ref.Number))
 }
 
-func pullFilesURL(baseURL string, ref models.PRRef) string {
-	return joinGitHubURL(baseURL, ref, "pulls", strconv.Itoa(ref.Number), "files") + "?per_page=100"
+func pullFilesURL(baseURL string, ref models.PRRef, page int) string {
+	return joinGitHubURL(baseURL, ref, "pulls", strconv.Itoa(ref.Number), "files") + "?per_page=" + strconv.Itoa(githubFilesPerPage) + "&page=" + strconv.Itoa(page)
 }
 
 func joinGitHubURL(baseURL string, ref models.PRRef, parts ...string) string {

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +37,27 @@ func NewPRAnalyzer(cfg config.Config) PRAnalyzer {
 
 func (FallbackAnalyzer) AnalyzePullRequest(_ context.Context, ref models.PRRef, pr models.PullRequestData) (models.ReviewResponse, error) {
 	return newPendingAIReviewResponse(ref, pr), nil
+}
+
+func (FallbackAnalyzer) AnalyzePullRequestStream(_ context.Context, ref models.PRRef, pr models.PullRequestData, emit StreamEmitter) (models.ReviewResponse, error) {
+	response := newPendingAIReviewResponse(ref, pr)
+	if err := emit("summary_delta", models.ReviewTextDeltaEvent{Text: response.Summary}); err != nil {
+		return models.ReviewResponse{}, err
+	}
+	for _, risk := range response.Risks {
+		if err := emit("risk", models.ReviewRiskEvent{Risk: risk}); err != nil {
+			return models.ReviewResponse{}, err
+		}
+	}
+	for _, comment := range response.ReviewComments {
+		if err := emit("review_comment", models.ReviewCommentEvent{Comment: comment}); err != nil {
+			return models.ReviewResponse{}, err
+		}
+	}
+	if err := emit("final_review_delta", models.ReviewTextDeltaEvent{Text: response.FinalReview}); err != nil {
+		return models.ReviewResponse{}, err
+	}
+	return response, nil
 }
 
 type OpenAICompatibleAnalyzer struct {
@@ -74,13 +94,29 @@ func (client OpenAICompatibleAnalyzer) AnalyzePullRequest(ctx context.Context, r
 	return response, nil
 }
 
+func (client OpenAICompatibleAnalyzer) AnalyzePullRequestStream(ctx context.Context, ref models.PRRef, pr models.PullRequestData, emit StreamEmitter) (models.ReviewResponse, error) {
+	prompt := buildStreamingReviewPrompt(ref, pr)
+	output, err := client.requestReviewStream(ctx, prompt, emit, fallbackReviewFile(pr.Files))
+	if err != nil {
+		return models.ReviewResponse{}, err
+	}
+
+	response := newReviewResponseFromGitHub(pr)
+	response.Summary = output.Summary
+	response.Risks = output.Risks
+	response.ReviewComments = output.ReviewComments
+	response.FinalReview = output.FinalReview
+	ensureReviewDefaults(&response, ref)
+	return response, nil
+}
+
 func (client OpenAICompatibleAnalyzer) requestReview(ctx context.Context, prompt string) (aiReviewOutput, error) {
 	payload := map[string]any{
 		"model": client.model,
 		"messages": []map[string]string{
 			{
 				"role":    "system",
-				"content": "You are a senior code reviewer. Return only valid JSON.",
+				"content": "You are a senior code reviewer. Return only valid JSON without markdown fences.",
 			},
 			{
 				"role":    "user",
@@ -107,12 +143,19 @@ func (client OpenAICompatibleAnalyzer) requestReview(ctx context.Context, prompt
 
 	resp, err := client.httpClient.Do(req)
 	if err != nil {
-		return aiReviewOutput{}, err
+		return aiReviewOutput{}, ServiceError{
+			Kind:    ErrorKindAIUnavailable,
+			Message: "Unable to connect to the AI service. Check OPENAI_BASE_URL, OPENAI_API_KEY, or proxy settings.",
+			Err:     err,
+		}
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return aiReviewOutput{}, fmt.Errorf("ai api returned %s", resp.Status)
+		return aiReviewOutput{}, ServiceError{
+			Kind:    ErrorKindAIUnavailable,
+			Message: fmt.Sprintf("AI service returned an unexpected status: %s", resp.Status),
+		}
 	}
 
 	var completion struct {
@@ -123,67 +166,42 @@ func (client OpenAICompatibleAnalyzer) requestReview(ctx context.Context, prompt
 		} `json:"choices"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&completion); err != nil {
-		return aiReviewOutput{}, err
+		return aiReviewOutput{}, ServiceError{
+			Kind:    ErrorKindAIUnavailable,
+			Message: "Unable to parse AI service response.",
+			Err:     err,
+		}
 	}
 	if len(completion.Choices) == 0 {
-		return aiReviewOutput{}, errors.New("ai api returned no choices")
+		return aiReviewOutput{}, ServiceError{
+			Kind:    ErrorKindAIUnavailable,
+			Message: "AI service returned no usable choices.",
+			Err:     errors.New("ai api returned no choices"),
+		}
 	}
 
+	return parseAIReviewOutput(completion.Choices[0].Message.Content)
+}
+
+func parseAIReviewOutput(content string) (aiReviewOutput, error) {
 	var output aiReviewOutput
-	if err := json.Unmarshal([]byte(completion.Choices[0].Message.Content), &output); err != nil {
+	if err := json.Unmarshal([]byte(content), &output); err == nil {
+		return output, nil
+	}
+
+	var raw struct {
+		Summary        string          `json:"summary"`
+		Risks          json.RawMessage `json:"risks"`
+		ReviewComments json.RawMessage `json:"review_comments"`
+		FinalReview    string          `json:"final_review"`
+	}
+	if err := json.Unmarshal([]byte(content), &raw); err != nil {
 		return aiReviewOutput{}, fmt.Errorf("ai response is not valid review JSON: %w", err)
 	}
 
+	output.Summary = raw.Summary
+	output.FinalReview = raw.FinalReview
+	_ = json.Unmarshal(raw.Risks, &output.Risks)
+	_ = json.Unmarshal(raw.ReviewComments, &output.ReviewComments)
 	return output, nil
-}
-
-func buildReviewPrompt(ref models.PRRef, pr models.PullRequestData) string {
-	var builder strings.Builder
-	builder.WriteString("Review this GitHub pull request and return JSON with exactly these keys: summary, risks, review_comments, final_review.\n")
-	builder.WriteString("Risk level must be one of high, medium, low. Use concise Chinese review language.\n\n")
-	builder.WriteString("PR: ")
-	builder.WriteString(ref.Owner + "/" + ref.Repo + "#" + strconv.Itoa(ref.Number) + "\n")
-	builder.WriteString("Title: " + pr.Title + "\n")
-	builder.WriteString("Author: " + pr.Author + "\n")
-	builder.WriteString("Stats: +" + strconv.Itoa(pr.Additions) + " -" + strconv.Itoa(pr.Deletions) + ", files " + strconv.Itoa(pr.FilesChanged) + "\n\n")
-	builder.WriteString("Files and patches:\n")
-	builder.WriteString(TrimDiffForPrompt(pr.Files, 12000))
-	return builder.String()
-}
-
-func TrimDiffForPrompt(files []models.PullRequestFile, maxChars int) string {
-	var builder strings.Builder
-	for _, file := range files {
-		if builder.Len() >= maxChars {
-			break
-		}
-
-		builder.WriteString("\n--- ")
-		builder.WriteString(file.Filename)
-		builder.WriteString(" (")
-		builder.WriteString(file.Status)
-		builder.WriteString(", +")
-		builder.WriteString(strconv.Itoa(file.Additions))
-		builder.WriteString(" -")
-		builder.WriteString(strconv.Itoa(file.Deletions))
-		builder.WriteString(") ---\n")
-
-		patch := file.Patch
-		if patch == "" {
-			patch = "(no patch available)"
-		}
-		remaining := maxChars - builder.Len()
-		if remaining <= 0 {
-			break
-		}
-		if len(patch) > remaining {
-			builder.WriteString(patch[:remaining])
-			builder.WriteString("\n[diff truncated]\n")
-			break
-		}
-		builder.WriteString(patch)
-		builder.WriteString("\n")
-	}
-
-	return builder.String()
 }
